@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import axios from "axios";
 
-const API = "http://127.0.0.1:8000";
+const API = "https://smart-notes-ai.onrender.com/";
 
 // typing effect
 const typeText = (text, setMessages) => {
