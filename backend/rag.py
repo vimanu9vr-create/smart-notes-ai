@@ -1,39 +1,59 @@
 import os
+import numpy as np
+import faiss
 from openai import OpenAI
-from langchain_openai import OpenAIEmbeddings
-from langchain_community.vectorstores import FAISS
-from langchain_text_splitters import CharacterTextSplitter
 
-vector_store = None
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-
-def process_text(text):
-    global vector_store
-    splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    chunks = splitter.split_text(text)
-    embeddings = OpenAIEmbeddings(openai_api_key=os.getenv("OPENAI_API_KEY"))
-    vector_store = FAISS.from_texts(chunks, embeddings)
+# In-memory store
+_index: faiss.IndexFlatL2 | None = None
+_chunks: list[str] = []
 
 
-def ask_question(question):
-    global vector_store
+def _chunk_text(text: str, size: int = 1000, overlap: int = 100) -> list[str]:
+    chunks, start = [], 0
+    while start < len(text):
+        chunks.append(text[start : start + size])
+        start += size - overlap
+    return chunks
 
-    if vector_store is None:
+
+def _embed(texts: list[str]) -> np.ndarray:
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=texts,
+    )
+    vectors = [d.embedding for d in response.data]
+    return np.array(vectors, dtype=np.float32)
+
+
+def process_text(text: str) -> None:
+    global _index, _chunks
+    _chunks = _chunk_text(text)
+    embeddings = _embed(_chunks)
+    dim = embeddings.shape[1]
+    _index = faiss.IndexFlatL2(dim)
+    _index.add(embeddings)
+
+
+def ask_question(question: str) -> str:
+    if _index is None:
         return "Please upload a PDF first."
 
-    docs = vector_store.similarity_search(question, k=4)
-    if not docs:
+    q_vec = _embed([question])
+    _, indices = _index.search(q_vec, k=4)
+    relevant = [_chunks[i] for i in indices[0] if i < len(_chunks)]
+
+    if not relevant:
         return "No relevant information found in the PDF."
 
-    context = "\n\n".join([doc.page_content for doc in docs])
-
+    context = "\n\n".join(relevant)
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {
                 "role": "system",
-                "content": "You are a helpful assistant. Answer questions based only on the provided context. Be concise and accurate.",
+                "content": "Answer questions based only on the provided context. Be concise and accurate.",
             },
             {
                 "role": "user",
